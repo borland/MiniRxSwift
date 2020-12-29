@@ -29,7 +29,7 @@ public protocol Disposable {
 public class Observable<T> : ObservableType {
     private let _subscribeHandler: (AnyObserver<Element>) -> Disposable
     
-    init(_ subcribeHandler: @escaping (AnyObserver<Element>) -> Disposable) {
+    public init(_ subcribeHandler: @escaping (AnyObserver<Element>) -> Disposable) {
         _subscribeHandler = subcribeHandler
     }
     
@@ -120,17 +120,19 @@ public struct Disposables {
         }
     }
     
-    static func create() -> Disposable {
+    public static func create() -> Disposable {
         NopDisposable()
     }
     
-    static func create(with dispose: @escaping () -> Void) -> Disposable {
+    public static func create(with dispose: @escaping () -> Void) -> Disposable {
         AnyDisposable(disposeAction: dispose)
     }
 }
 
 public class BooleanDisposable : Disposable {
     var isDisposed: Bool = false
+    
+    public init() { }
     
     public func dispose() {
         self.isDisposed = true
@@ -218,13 +220,13 @@ public struct AnyObserver<Element> : ObserverType {
     private let _onError: ((Swift.Error) -> Void)?
     private let _onCompleted: (() -> Void)?
     
-    init(onNext: ((Element) -> Void)? = nil, onError: ((Swift.Error) -> Void)? = nil, onCompleted: (() -> Void)? = nil) {
+    public init(onNext: ((Element) -> Void)? = nil, onError: ((Swift.Error) -> Void)? = nil, onCompleted: (() -> Void)? = nil) {
         _onNext = onNext
         _onError = onError
         _onCompleted = onCompleted
     }
     
-    init<O: ObserverType>(observer: O) where O.Element == Element {
+    public init<O: ObserverType>(observer: O) where O.Element == Element {
         _onNext = observer.onNext
         _onError = observer.onError
         _onCompleted = observer.onCompleted
