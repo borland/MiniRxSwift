@@ -27,17 +27,23 @@ public protocol Disposable {
 
 /** Type-Erasing bridge between Observable protocol and a class we can stick in a variable */
 public class Observable<T> : ObservableType {
+    public typealias Element = T
+    
+    public func subscribe<O: ObserverType>(_ observer: O) -> Disposable where O.Element == Element {
+        fatalError("Abstract method Observable.subscribe must be overridden")
+    }
+}
+
+class AnonymousObservable<T> : Observable<T> {
     private let _subscribeHandler: (AnyObserver<Element>) -> Disposable
     
     public init(_ subcribeHandler: @escaping (AnyObserver<Element>) -> Disposable) {
         _subscribeHandler = subcribeHandler
     }
     
-    public func subscribe<O: ObserverType>(_ observer: O) -> Disposable where O.Element == Element {
+    public override func subscribe<O: ObserverType>(_ observer: O) -> Disposable where O.Element == Element {
         return _subscribeHandler(AnyObserver(observer: observer))
     }
-    
-    public typealias Element = T
 }
 
 public extension ObservableType {
@@ -45,7 +51,7 @@ public extension ObservableType {
     /** Creates a new observable by calling your closure to perform some operation:
     http://www.introtorx.com/content/v1.0.10621.0/04_CreatingObservableSequences.html#ObservableCreate */
     static func create(subscribe: @escaping (AnyObserver<Element>) -> Disposable) -> Observable<Element> {
-        return Observable(subscribe)
+        return AnonymousObservable(subscribe)
     }
     
     /** Creates a new observable which returns the given error:
@@ -193,13 +199,15 @@ struct Bag<T> {
 
 /** Represents an Event Source that you can use to publish values:
 http://www.introtorx.com/content/v1.0.10621.0/02_KeyTypes.html#Subject */
-public class PublishSubject<T> : ObserverType, ObservableType, Lockable {
+public class PublishSubject<T> : Observable<T>, ObserverType, Lockable {
     public typealias Element = T
     private var _subscribers = Bag<AnyObserver<T>>()
     
-    public init() {}
+    public override init() {
+        super.init()
+    }
     
-    public func subscribe<O : ObserverType>(_ observer: O) -> Disposable where O.Element == T {
+    public override func subscribe<O : ObserverType>(_ observer: O) -> Disposable where O.Element == T {
         let wrapper = AnyObserver(observer: observer)
         let removeKey =  withLock {
             _subscribers.insert(wrapper)
@@ -229,7 +237,7 @@ public class PublishSubject<T> : ObserverType, ObservableType, Lockable {
 public extension ObservableType {
     /** type erasing wrapper */
     func asObservable() -> Observable<Element> {
-        return Observable(self.subscribe)
+        return AnonymousObservable(self.subscribe)
     }
     
     func subscribe(onNext: ((Element) -> Void)? = nil, onError: ((Swift.Error) -> Void)? = nil, onCompleted: (() -> Void)? = nil) -> Disposable {
