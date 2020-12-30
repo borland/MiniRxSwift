@@ -129,8 +129,12 @@ public struct Disposables {
     }
 }
 
-public class BooleanDisposable : Disposable {
-    var isDisposed: Bool = false
+public protocol Cancelable : Disposable {
+    var isDisposed: Bool { get }
+}
+
+public class BooleanDisposable : Cancelable {
+    public var isDisposed: Bool = false
     
     public init() { }
     
@@ -139,18 +143,35 @@ public class BooleanDisposable : Disposable {
     }
 }
 
+struct BagKey : Equatable, Hashable {
+    static func update(state: inout BagKey) -> BagKey {
+        let nextValue = state.value + 1
+        let result = BagKey(value: nextValue)
+        state = result // update
+        return result
+    }
+    
+    let value: Int64
+    init() {
+        self.value = 0
+    }
+    
+    private init(value: Int64) {
+        self.value = value
+    }
+}
+
 // we need to add and remove observers and stuff to arrays, but the things aren't themselves equatable,
 // so we need to attach some arbitrary key to each one.
 // Unlike the RxSwift version, this isn't optimised for speed, we want smaller code size.
 // Note: Like the RxSwift version this is NOT THREAD SAFE
 struct Bag<T> {
-    typealias BagKey = Int64
     
-    private var _nextKey: BagKey = 0
+    private var _nextKey = BagKey()
     private var _items: [BagKey: T] = [:]
     
     mutating func insert(_ item: T) -> BagKey {
-        let key = OSAtomicIncrement64(&_nextKey)
+        let key = BagKey.update(state: &_nextKey)
         _items[key] = item
         return key
     }
@@ -244,29 +265,43 @@ public struct AnyObserver<Element> : ObserverType {
 }
 
 public class CompositeDisposable : Disposable, Lockable {
-    private var _disposables:[Disposable] = []
+    private var _disposables = Bag<Disposable>()
     private var _disposed = false
+    
+    public struct DisposeKey {
+        fileprivate let value: BagKey
+        fileprivate init(value: BagKey) {
+            self.value = value
+        }
+    }
     
     public init() { }
     
-    public init(disposables:[Disposable]) {
-        _disposables.append(contentsOf: disposables)
-    }
-    
-    public func insert(_ disposable:Disposable) {
+    public func insert(_ disposable: Disposable) -> DisposeKey? {
         withLock {
             if _disposed {
                 disposable.dispose()
-                return
+                return nil
             }
-            _disposables.append(disposable)
+            let bagKey = _disposables.insert(disposable)
+            return DisposeKey(value: bagKey)
+        }
+    }
+    
+    // removes and disposes the value identified by disposeKey
+    public func remove(for disposeKey: DisposeKey) {
+        withLock {
+            let v = _disposables.removeKey(disposeKey.value)
+            v?.dispose()
         }
     }
     
     public func dispose() {
         let copy:[Disposable] = withLock {
             _disposed = true
-            return _disposables
+            let copy = _disposables.toArray()
+            _disposables = .init()
+            return copy
         }
         for d in copy { d.dispose() }
     }
@@ -336,7 +371,7 @@ public extension ObservableType {
                 }
             }
             
-            group.insert(self.subscribe(
+            _ = group.insert(self.subscribe(
                 onNext: { (value) -> Void in
                     do {
                         OSAtomicIncrement32(&count)
@@ -350,7 +385,7 @@ public extension ObservableType {
                             },
                             onCompleted: completionHandler)
                         
-                        group.insert(innerDisposable)
+                        _ = group.insert(innerDisposable)
                         
                     } catch let error {
                         group.dispose()
