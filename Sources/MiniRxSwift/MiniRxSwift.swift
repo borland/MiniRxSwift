@@ -197,6 +197,8 @@ public class PublishSubject<T> : ObserverType, ObservableType, Lockable {
     public typealias Element = T
     private var _subscribers = Bag<AnyObserver<T>>()
     
+    public init() {}
+    
     public func subscribe<O : ObserverType>(_ observer: O) -> Disposable where O.Element == T {
         let wrapper = AnyObserver(observer: observer)
         let removeKey =  withLock {
