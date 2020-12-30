@@ -8,7 +8,7 @@ final class MiniRxSwiftTests: XCTestCase {
         
         _ = Observable.from([1,2,3,4,5])
             .flatMap { i in
-                Observable.just(value: i * 10)
+                Observable.just(i * 10)
             }
             .filter { i in i > 29 }
             .map { i in "\(i)" }

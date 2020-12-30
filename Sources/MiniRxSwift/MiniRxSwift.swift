@@ -56,12 +56,12 @@ public extension ObservableType {
     
     /** Creates a new observable which returns the given error:
     http://www.introtorx.com/content/v1.0.10621.0/04_CreatingObservableSequences.html#ObservableThrow */
-    static func error(err:Error) -> Observable<Element> {
+    static func error(_ error: Error) -> Observable<Element> {
         let disposable = BooleanDisposable()
         
         return create { observer in
             if disposable.isDisposed {
-                observer.onError(err)
+                observer.onError(error)
             }
             return disposable
         }
@@ -78,11 +78,22 @@ public extension ObservableType {
     
     /** Creates a new observable which immediately returns the provided value, then completes:
     http://www.introtorx.com/content/v1.0.10621.0/04_CreatingObservableSequences.html#ObservableReturn */
-    static func just(value: Element) -> Observable<Element> {
+    static func just(_ value: Element) -> Observable<Element> {
         return create { observer in
             observer.onNext(value)
             observer.onCompleted()
             return Disposables.create()
+        }
+    }
+    
+    static func deferred(_ observableFactory: @escaping () throws -> Observable<Element>) -> Observable<Element> {
+        return create { observer in
+            do {
+                return try observableFactory().subscribe(observer)
+            } catch let err {
+                observer.onError(err)
+                return Disposables.create()
+            }
         }
     }
     
