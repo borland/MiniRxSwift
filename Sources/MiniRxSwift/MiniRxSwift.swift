@@ -89,6 +89,15 @@ public extension ObservableType {
         }
     }
     
+    /** Creates a new observable which never calls onNext/onError or onComplete:
+    # Reference
+    [Never](http://reactivex.io/documentation/operators/empty-never-throw.html) */
+    static func never() -> Observable<Element> {
+        return create { observer in
+            return Disposables.create()
+        }
+    }
+    
     /** Creates a new observable which immediately returns the given value, then completes.
     # Reference
     [Just](http://reactivex.io/documentation/operators/just.html) */
