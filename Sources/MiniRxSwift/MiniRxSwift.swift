@@ -1,5 +1,5 @@
 //
-//  MiniRxSwift version 0.0.1
+//  MiniRxSwift version 0.0.6
 //
 //  Copyright © 2020 Orion Edwards. Licensed under the MIT License
 //  https://opensource.org/licenses/MIT
