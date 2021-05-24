@@ -1,7 +1,7 @@
 //
-//  MiniRxSwift version 0.0.6
+//  MiniRxSwift version 0.0.9
 //
-//  Copyright © 2020 Orion Edwards. Licensed under the MIT License
+//  Copyright © 2021 Orion Edwards. Licensed under the MIT License
 //  https://opensource.org/licenses/MIT
 //
 //
@@ -45,6 +45,37 @@ public class Observable<T> : ObservableType {
     }
 }
 
+/// Generic error codes, copied from RxSwift
+public enum MiniRxError : Swift.Error, CustomDebugStringConvertible {
+    /// Unknown error occurred.
+    case unknown
+    /// Performing an action on disposed object.
+    case disposed(object: AnyObject)
+    /// Arithmetic overflow error.
+    case overflow
+    /// Argument out of range error.
+    case argumentOutOfRange
+    /// Sequence doesn't contain any elements.
+    case noElements
+    /// Sequence contains more than one element.
+    case moreThanOneElement
+    /// Timeout error.
+    case timeout
+    
+    /// A textual representation of `self`, suitable for debugging.
+    public var debugDescription: String {
+        switch self {
+        case .unknown: return "Unknown error occurred."
+        case .disposed(let object): return "Object `\(object)` was already disposed."
+        case .overflow: return "Arithmetic overflow occurred."
+        case .argumentOutOfRange: return "Argument out of range."
+        case .noElements: return "Sequence doesn't contain any elements."
+        case .moreThanOneElement: return "Sequence contains more than one element."
+        case .timeout: return "Sequence timeout."
+        }
+    }
+}
+
 class AnonymousObservable<T> : Observable<T> {
     private let _subscribeHandler: (AnyObserver<Element>) -> Disposable
     
@@ -69,13 +100,9 @@ public extension ObservableType {
     # Reference
     [Throw](http://reactivex.io/documentation/operators/empty-never-throw.html) */
     static func error(_ error: Error) -> Observable<Element> {
-        let disposable = BooleanDisposable()
-        
         return create { observer in
-            if disposable.isDisposed {
-                observer.onError(error)
-            }
-            return disposable
+            observer.onError(error)
+            return Disposables.create()
         }
     }
     
@@ -155,6 +182,7 @@ public extension ObservableType {
         return create { observer in
             let group = CompositeDisposable()
             
+            var doneCount = Int32(sources.count)
             for source in sources {
                 var subKey: CompositeDisposable.DisposeKey? = nil
                 subKey = group.insert(source.subscribe(onNext: { value in
@@ -165,6 +193,10 @@ public extension ObservableType {
                 }, onCompleted: {
                     if let sk = subKey {
                         group.remove(for: sk)
+                    }
+                    let newDoneCount = OSAtomicDecrement32(&doneCount)
+                    if newDoneCount == 0 { // all done
+                        observer.onCompleted()
                     }
                 }))
             }
@@ -259,7 +291,10 @@ public extension ObservableType {
                 if let other = d2 { group.remove(for: other) }
                 observer.onError(err)
             }, onCompleted: {
-                if let other = d2 { group.remove(for: other) }
+                if let key = d1 { group.remove(for: key) }
+                if group.count == 0 {
+                    observer.onCompleted()
+                }
             }))
             
             d2 = group.insert(source2.subscribe(onNext: { (b) in
@@ -269,7 +304,10 @@ public extension ObservableType {
                 if let other = d1 { group.remove(for: other) }
                 observer.onError(err)
             }, onCompleted: {
-                if let other = d1 { group.remove(for: other) }
+                if let key = d2 { group.remove(for: key) }
+                if group.count == 0 {
+                    observer.onCompleted()
+                }
             }))
             
             return group
@@ -363,6 +401,14 @@ struct Bag<T> {
         return _items.removeValue(forKey: key)
     }
     
+    mutating func removeAll() {
+        _items.removeAll()
+    }
+    
+    var count: Int {
+        _items.count
+    }
+    
     // copies the current items into a new array
     func toArray() -> [T] {
         var result:[T] = []
@@ -374,60 +420,72 @@ struct Bag<T> {
     }
 }
 
+fileprivate enum SubjectState {
+    case running, completed, failed(Error)
+}
+
 /** Represents an Event Source that you can use to publish values:
 http://www.introtorx.com/content/v1.0.10621.0/02_KeyTypes.html#Subject */
 public class PublishSubject<T> : Observable<T>, ObserverType, Lockable {
     private var _subscribers = Bag<AnyObserver<T>>()
     
-    public override init() {
+    // note PublishSubject remembers if it is stopped/failed
+    private var state: SubjectState = .running
+    
+    public override init() { // base class Observable<T> doesn't have a public ctor
         super.init()
     }
     
+    public var hasObservers: Bool {
+        synchronized { _subscribers.count > 0}
+    }
+    
     public override func subscribe<O : ObserverType>(_ observer: O) -> Disposable where O.Element == T {
+        let currentState = synchronized { self.state }
+        guard case SubjectState.running = currentState else { return Disposables.create() }
+        
         let wrapper = AnyObserver.from(observer)
-        let removeKey =  synchronized {
+        let removeKey = synchronized {
             _subscribers.insert(wrapper)
         }
         return Disposables.create(with: {
             self.synchronized {
                 self._subscribers.removeKey(removeKey)
             }
-            print()
+            () // our block needs to return void rather than the result of removeKey
         })
     }
+    
     public func onNext(_ element: T) {
-        let subscribers = synchronized { _subscribers.toArray() }
+        let subscribers = synchronized { () -> [AnyObserver<T>] in
+            return _subscribers.toArray()
+        }
         for s in subscribers { s.onNext(element) }
     }
+    
     public func onError(_ error: Error) {
-        let subscribers = synchronized { _subscribers.toArray() }
+        let subscribers = synchronized { () -> [AnyObserver<T>] in
+            state = .failed(error)
+            let r = _subscribers.toArray()
+            _subscribers.removeAll()
+            return r
+        }
         for s in subscribers { s.onError(error) }
     }
+    
     public func onCompleted() {
-        let subscribers = synchronized { _subscribers.toArray() }
+        let subscribers = synchronized { () -> [AnyObserver<T>] in
+            state = .completed
+            let r = _subscribers.toArray()
+            _subscribers.removeAll()
+            return r
+        }
         for s in subscribers { s.onCompleted() }
     }
 }
 
-// observable.share needs to dispose of its underlying source when dispose.
-// otherwise the same as a publish subject
-private class SharedSubject<T> : PublishSubject<T>, Disposable {
-    private let _source: Disposable
-    
-    init(source: Disposable) {
-        _source = source
-    }
-    
-    func dispose() {
-        _source.dispose()
-    }
-    
-    
-}
-
 public class BehaviorSubject<T> : PublishSubject<T> {
     private var _value: Element
-    private var _error: Error? = nil
     
     public init(value: Element) {
         _value = value
@@ -438,28 +496,16 @@ public class BehaviorSubject<T> : PublishSubject<T> {
         _value
     }
     
-    public override func subscribe<O : ObserverType>(_ observer: O) -> Disposable where O.Element == T {
-        return synchronized {
-            if let err = _error { // already failed
-                observer.onError(err)
-                return Disposables.create()
-            }
-            
-            observer.onNext(_value)
-            return super.subscribe(onNext: { val in
-                self.synchronized {
-                    self._value = val
-                    observer.onNext(val)
-                }
-            }, onError: { err in
-                self.synchronized {
-                    self._error = err
-                    observer.onError(err)
-                }
-            }, onCompleted: {
-                observer.onCompleted()
-            })
-        }
+    override public func onNext(_ element: T) {
+        _value = element
+        super.onNext(element)
+    }
+    
+    public override func subscribe<O>(_ observer: O) -> Disposable where T == O.Element, O : ObserverType {
+        let disposable = super.subscribe(observer)
+        // push stored value immediately
+        observer.onNext(_value)
+        return disposable
     }
 }
 
@@ -473,10 +519,44 @@ public extension ObservableType {
     func subscribe(onNext: ((Element) -> Void)? = nil, onError: ((Swift.Error) -> Void)? = nil, onCompleted: (() -> Void)? = nil) -> Disposable {
         return subscribe(AnyObserver(onNext: onNext, onError: onError, onCompleted: onCompleted))
     }
+    
+    // extra wrapper over subscribe which also captures onDisposed
+    func subscribe(
+        onNext: ((Element) -> Void)? = nil,
+        onError: ((Swift.Error) -> Void)? = nil,
+        onCompleted: (() -> Void)? = nil,
+        onDisposed: (() -> Void)? = nil) -> Disposable {
+        
+        // if they asked to hook dispose, we need to do extra work
+        let disposable: Disposable
+        if let disposed = onDisposed {
+            disposable = Disposables.create(with: disposed)
+        } else {
+            disposable = Disposables.create()
+        }
+        
+        let observer = AnyObserver { value in
+            onNext?(value)
+        } onError: { error in
+            onError?(error)
+            disposable.dispose()
+        } onCompleted: {
+            onCompleted?()
+            disposable.dispose()
+        }
+        
+        return CompositeDisposable(
+            self.subscribe(observer),
+            disposable)
+    }
 }
+
+var counter = 0
 
 // type-erased ObserverType
 public struct AnyObserver<Element> : ObserverType {
+    private let id: Int
+    
     private let _onNext: ((Element) -> Void)?
     private let _onError: ((Swift.Error) -> Void)?
     private let _onCompleted: (() -> Void)?
@@ -491,24 +571,29 @@ public struct AnyObserver<Element> : ObserverType {
     }
     
     public init(onNext: ((Element) -> Void)? = nil, onError: ((Swift.Error) -> Void)? = nil, onCompleted: (() -> Void)? = nil) {
+        id = counter; counter += 1
         _onNext = onNext
         _onError = onError
         _onCompleted = onCompleted
     }
     
     public init<O: ObserverType>(observer: O) where O.Element == Element {
+        id = counter; counter += 1
         _onNext = observer.onNext
         _onError = observer.onError
         _onCompleted = observer.onCompleted
     }
     
     public func onNext(_ element: Element) {
+//        print("#\(id)|onNext \(element)")
         _onNext?(element)
     }
     public func onCompleted() {
+//        print("#\(id)|onCompleted")
         _onCompleted?()
     }
     public func onError(_ error: Error) {
+//        print("#\(id)|onError \(error)")
         _onError?(error)
     }
 }
@@ -541,6 +626,10 @@ public class CompositeDisposable : Disposable, Lockable {
             let bagKey = _disposables.insert(disposable)
             return DisposeKey(value: bagKey)
         }
+    }
+    
+    public var count: Int {
+        synchronized { _disposables.count }
     }
     
     // removes and disposes the value identified by disposeKey
@@ -624,32 +713,47 @@ public extension ObservableType {
     [FlatMap](http://reactivex.io/documentation/operators/flatmap.html) */
     func flatMap<T:ObservableType, R>(transform: @escaping (Element) throws -> T) -> Observable<R> where T.Element == R {
         return Observable.create { observer in
+            // handle re-entrancy. if the things being flatMapped complete immediately, then
+            // all the code will run before group.insert does, and thus group.dispose becomes pointless
+            var isFailed = false
             let group = CompositeDisposable()
             var count:Int32 = 1
             let completionHandler = {
                 let newCount = OSAtomicDecrement32(&count)
-                if newCount == 0 { // all done
+                if newCount == 0 && !isFailed { // all done
                     observer.onCompleted()
                 }
             }
             
+            
             _ = group.insert(self.subscribe(
                 onNext: { (value) -> Void in
+                    if(isFailed) {
+                        return
+                    }
                     do {
                         OSAtomicIncrement32(&count)
                         let innerDisposable = (try transform(value)).subscribe(
                             onNext: { value in
-                                observer.onNext(value)
+                                if(!isFailed) {
+                                    observer.onNext(value)
+                                }
                             },
                             onError: { error in
-                                group.dispose()
-                                observer.onError(error)
+                                if(!isFailed) {
+                                    isFailed = true
+                                    group.dispose()
+                                    observer.onError(error)
+                                }
                             },
-                            onCompleted: completionHandler)
+                            onCompleted: {
+                                completionHandler()
+                            })
                         
                         _ = group.insert(innerDisposable)
                         
                     } catch let error {
+                        isFailed = true
                         group.dispose()
                         observer.onError(error)
                     }
@@ -744,7 +848,7 @@ public extension ObservableType {
     /** If an observable emits an error, rather than stopping, this will continue the sequence with a second observable produced by `handler`
     # Reference
     [Catch](http://reactivex.io/documentation/operators/catch.html) */
-    func catchError(_ handler: @escaping (Error) throws -> Observable<Element>) -> Observable<Element> {
+    func `catch`(_ handler: @escaping (Error) throws -> Observable<Element>) -> Observable<Element> {
         return Observable.create { (observer) -> Disposable in
             let disposable = SerialDisposable()
                 
@@ -753,7 +857,7 @@ public extension ObservableType {
                 onError: { error in
                     do {
                         disposable.disposable = try handler(error).subscribe(observer)
-                    } catch let innerErr { // TODO tests around this behaviour to make sure it matches Rx
+                    } catch let innerErr {
                         observer.onError(innerErr)
                         disposable.dispose()
                     }
@@ -797,7 +901,7 @@ public extension ObservableType {
     /** Causes `onNext/onError/onCompleted` to be called on the given scheduler (usually for thread-jumping to the main thread)
     # Reference
     [ObserveOn](http://reactivex.io/documentation/operators/observeon.html) */
-    func observeOn(_ scheduler: ImmediateSchedulerType) -> Observable<Element> {
+    func observe(on scheduler: ImmediateSchedulerType) -> Observable<Element> {
         return Observable.create { observer in
             return self.subscribe(onNext: { value in
                 _ = scheduler.schedule(()) {
@@ -823,7 +927,7 @@ public extension ObservableType {
     /** Causes the `subscribe` code to be called on the given scheduler (usually for thread-jumping).
     # Reference
     [SubscribeOn](http://reactivex.io/documentation/operators/subscribeon.html) */
-    func subscribeOn(_ scheduler: ImmediateSchedulerType) -> Observable<Element> {
+    func subscribe(on scheduler: ImmediateSchedulerType) -> Observable<Element> {
         return Observable.create { observer in
             return scheduler.schedule(()) { () -> Disposable in
                 self.subscribe(observer)
@@ -889,7 +993,7 @@ public extension ObservableType {
         if maxAttemptCount == 0 {
             return self.asObservable() // don't catch the error
         }
-        return self.catchError { _ in
+        return self.catch { _ in
             return retry(maxAttemptCount - 1) // caught an error, retry with attempt count - 1
         }
     }
@@ -898,18 +1002,25 @@ public extension ObservableType {
     # Reference
     [Refcount](http://reactivex.io/documentation/operators/refcount.html) */
     func share() -> Observable<Element> {
-        return Observable.deferred {
-            let source = SerialDisposable()
-            let shared = SharedSubject<Element>(source: source)
-                
-            source.disposable = self.subscribe { (value) in
-                shared.onNext(value)
-            } onError: { (err) in
-                shared.onError(err)
-            } onCompleted: {
-                shared.onCompleted()
+        let sharedSubject = PublishSubject<Element>()
+        var attachedDisposable: Disposable? = nil
+        
+        var count = Int32(0)
+        return Observable.create { observer in
+            let localDisposable = sharedSubject.subscribe(observer)
+            
+            let newCount = OSAtomicIncrement32(&count)
+            if newCount == 1 { // first subscribe (connect) to the source
+                attachedDisposable = self.subscribe(sharedSubject)
             }
-            return shared
+            
+            return Disposables.create {
+                localDisposable.dispose()
+                let newCount = OSAtomicDecrement32(&count)
+                if newCount == 0 { // everyone released
+                    attachedDisposable?.dispose()
+                }
+            }
         }
     }
 }
@@ -953,6 +1064,21 @@ public class MainScheduler : SerialDispatchQueueScheduler {
     
     public init() {
         super.init(DispatchQueue.main)
+    }
+}
+
+// RxSwift ConcurrentDispatchQueueScheduler has leeway, which is good for power management, but for simplicity that is not included here
+public class ConcurrentDispatchQueueScheduler : DispatchQueueScheduler {
+    public init(queue: DispatchQueue) {
+        super.init(queue)
+    }
+    
+    public convenience init(qos: DispatchQoS) {
+        self.init(queue: DispatchQueue(
+            label: "minirxswift.queue.\(qos)",
+            qos: qos,
+            attributes: [DispatchQueue.Attributes.concurrent],
+            target: nil))
     }
 }
 
