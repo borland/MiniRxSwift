@@ -3,20 +3,29 @@ import XCTest
 
 final class MiniRxSwiftTests: XCTestCase {
     func testAllTheThings() {
+        var lastSideEffect: String? = nil
+        
         var captured = "<not captured>"
         var done = false
         
         _ = Observable.from([1,2,3,4,5])
             .flatMap { i in
-                Observable.just(i * 10)
+                Observable.from([i * 10, i * 10 + 1])
             }
-            .filter { i in i > 29 }
-            .map { i in "\(i)" }
+            .filter { i in
+                i > 29
+            }
+            .map { i in
+                "$\(i)"
+            }
+            .do(onNext: { s in
+                lastSideEffect = s
+            })
             .reduce("") { (result, s) in
                 if result.isEmpty {
-                    return s
+                    return "\(s ?? "null")"
                 } else {
-                    return result + ",\(s)"
+                    return result + ",\(s ?? "null")"
                 }
             }.subscribe(
                 onNext: { s in captured = s },
@@ -24,7 +33,8 @@ final class MiniRxSwiftTests: XCTestCase {
                 onCompleted: { done = true })
         
         XCTAssertEqual(true, done)
-        XCTAssertEqual("30,40,50", captured)
+        XCTAssertEqual("$30,$31,$40,$41,$50,$51", captured)
+        XCTAssertEqual("$51", lastSideEffect)
     }
 
     static var allTests = [

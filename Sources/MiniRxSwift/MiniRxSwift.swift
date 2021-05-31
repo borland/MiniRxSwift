@@ -1,9 +1,8 @@
 //
-//  MiniRxSwift version 0.0.9
+//  MiniRxSwift version 0.9.1
 //
 //  Copyright © 2021 Orion Edwards. Licensed under the MIT License
 //  https://opensource.org/licenses/MIT
-//
 //
 
 import Foundation
@@ -179,6 +178,10 @@ public extension ObservableType {
     # Reference
     [Merge](http://reactivex.io/documentation/operators/merge.html) */
     static func merge(_ sources: [Observable<Element>]) -> Observable<Element> {
+        if sources.isEmpty { // no work to do
+            return .empty()
+        }
+        
         return create { observer in
             let group = CompositeDisposable()
             
@@ -551,12 +554,8 @@ public extension ObservableType {
     }
 }
 
-var counter = 0
-
 // type-erased ObserverType
 public struct AnyObserver<Element> : ObserverType {
-    private let id: Int
-    
     private let _onNext: ((Element) -> Void)?
     private let _onError: ((Swift.Error) -> Void)?
     private let _onCompleted: (() -> Void)?
@@ -571,29 +570,24 @@ public struct AnyObserver<Element> : ObserverType {
     }
     
     public init(onNext: ((Element) -> Void)? = nil, onError: ((Swift.Error) -> Void)? = nil, onCompleted: (() -> Void)? = nil) {
-        id = counter; counter += 1
         _onNext = onNext
         _onError = onError
         _onCompleted = onCompleted
     }
     
     public init<O: ObserverType>(observer: O) where O.Element == Element {
-        id = counter; counter += 1
         _onNext = observer.onNext
         _onError = observer.onError
         _onCompleted = observer.onCompleted
     }
     
     public func onNext(_ element: Element) {
-//        print("#\(id)|onNext \(element)")
         _onNext?(element)
     }
     public func onCompleted() {
-//        print("#\(id)|onCompleted")
         _onCompleted?()
     }
     public func onError(_ error: Error) {
-//        print("#\(id)|onError \(error)")
         _onError?(error)
     }
 }
@@ -696,15 +690,31 @@ public extension ObservableType {
     [Map](http://reactivex.io/documentation/operators/map.html) */
     func map<R>(transform: @escaping (Element) throws -> R) -> Observable<R> {
         return Observable.create { observer in
-            self.subscribe(onNext: { value in
+            // handle re-entrancy.
+            var done = false
+            return self.subscribe(onNext: { value in
+                if done { return }
                 do {
                     observer.onNext(try transform(value))
                 } catch let error {
+                    if !done {
+                        done = true
+                        observer.onError(error)
+                    }
+                }
+            },
+            onError: { error in
+                if !done {
+                    done = true
                     observer.onError(error)
                 }
             },
-            onError: observer.onError,
-            onCompleted: observer.onCompleted)
+            onCompleted: {
+                if !done {
+                    done = true
+                    observer.onCompleted()
+                }
+            })
         }
     }
     
@@ -713,53 +723,52 @@ public extension ObservableType {
     [FlatMap](http://reactivex.io/documentation/operators/flatmap.html) */
     func flatMap<T:ObservableType, R>(transform: @escaping (Element) throws -> T) -> Observable<R> where T.Element == R {
         return Observable.create { observer in
-            // handle re-entrancy. if the things being flatMapped complete immediately, then
-            // all the code will run before group.insert does, and thus group.dispose becomes pointless
-            var isFailed = false
+            // handle re-entrancy.
+            var done = false
             let group = CompositeDisposable()
             var count:Int32 = 1
             let completionHandler = {
                 let newCount = OSAtomicDecrement32(&count)
-                if newCount == 0 && !isFailed { // all done
+                if newCount <= 0 && !done { // all done
+                    done = true
                     observer.onCompleted()
                 }
             }
             
-            
-            _ = group.insert(self.subscribe(
-                onNext: { (value) -> Void in
-                    if(isFailed) {
-                        return
-                    }
-                    do {
-                        OSAtomicIncrement32(&count)
-                        let innerDisposable = (try transform(value)).subscribe(
-                            onNext: { value in
-                                if(!isFailed) {
-                                    observer.onNext(value)
-                                }
-                            },
-                            onError: { error in
-                                if(!isFailed) {
-                                    isFailed = true
-                                    group.dispose()
-                                    observer.onError(error)
-                                }
-                            },
-                            onCompleted: {
-                                completionHandler()
-                            })
-                        
-                        _ = group.insert(innerDisposable)
-                        
-                    } catch let error {
-                        isFailed = true
-                        group.dispose()
-                        observer.onError(error)
-                    }
-                },
-                onError: observer.onError,
-                onCompleted: completionHandler))
+            _ = group.insert(self.subscribe(onNext: { (value) -> Void in
+                if done { return }
+                do {
+                    OSAtomicIncrement32(&count)
+                    let innerDisposable = (try transform(value)).subscribe(
+                        onNext: { value in
+                            if !done {
+                                observer.onNext(value)
+                            }
+                        },
+                        onError: { error in
+                            if !done {
+                                done = true
+                                group.dispose()
+                                observer.onError(error)
+                            }
+                        },
+                        onCompleted: completionHandler) // completionHandler has its own 'done' handling
+                    
+                    _ = group.insert(innerDisposable)
+                    
+                } catch let error {
+                    done = true
+                    group.dispose()
+                    observer.onError(error)
+                }
+            },
+            onError: { error in
+                if !done {
+                    done = true
+                    observer.onError(error)
+                }
+            },
+            onCompleted: completionHandler))
             
             return group
         }
@@ -811,38 +820,49 @@ public extension ObservableType {
     /** Attaches side effects to a sequence without modifying its values
     # Reference
     [Do](http://reactivex.io/documentation/operators/do.html) */
-    func `do`(onNext: ((Element) throws -> Void)? = nil, onError: ((Swift.Error) throws -> Void)? = nil, onCompleted: (() throws -> Void)? = nil) -> Observable<Element> {
-        return Observable.create { (observer) -> Disposable in
-            var disposable: Disposable! = nil
-            disposable = self.subscribe(onNext: { (value) in
+    func `do`(
+        onNext: ((Element) throws -> Void)? = nil,
+        onError: ((Swift.Error) throws -> Void)? = nil,
+        onCompleted: (() throws -> Void)? = nil,
+        onDispose: (() -> Void)? = nil) -> Observable<Element>
+    {
+        return Observable.create { observer in
+            var done = false
+            return self.subscribe { value in
+                if done { return }
                 do {
                     try onNext?(value)
-                    observer.onNext(value)
-                } catch let error {
-                    disposable?.dispose()
-                    observer.onError(error)
-                }
-            },
-            onError: { err in
-                do {
-                    try onError?(err)
+                    observer.onNext(value) // direct pass-through
+                } catch let err {
                     observer.onError(err)
-                } catch let error {
-                    disposable?.dispose()
-                    observer.onError(error)
+                    done = true
+                    // is next-after-error a problem here?
                 }
-            },
-            onCompleted: {
+            } onError: { error in
+                if done { return }
+                done = true
+                do {
+                    try onError?(error)
+                    observer.onError(error) // direct pass-through
+                } catch let err {
+                    observer.onError(err)
+                    // is next-after-error a problem here?
+                }
+            } onCompleted: {
+                if done { return }
+                done = true
                 do {
                     try onCompleted?()
-                    observer.onCompleted()
-                } catch let error {
-                    disposable?.dispose()
-                    observer.onError(error)
+                    observer.onCompleted() // direct pass-through
+                } catch let err {
+                    observer.onError(err)
+                    // is next-after-error a problem here?
                 }
-            })
-            return disposable
+            } onDisposed: {
+                onDispose?()
+            }
         }
+        
     }
     
     /** If an observable emits an error, rather than stopping, this will continue the sequence with a second observable produced by `handler`
@@ -990,7 +1010,7 @@ public extension ObservableType {
     # Reference
     [Retry](http://reactivex.io/documentation/operators/retry.html) */
     func retry(_ maxAttemptCount: Int) -> Observable<Element> {
-        if maxAttemptCount == 0 {
+        if maxAttemptCount <= 0 {
             return self.asObservable() // don't catch the error
         }
         return self.catch { _ in
