@@ -78,8 +78,8 @@ public enum MiniRxError : Swift.Error, CustomDebugStringConvertible {
 class AnonymousObservable<T> : Observable<T> {
     private let _subscribeHandler: (AnyObserver<Element>) -> Disposable
     
-    public init(_ subcribeHandler: @escaping (AnyObserver<Element>) -> Disposable) {
-        _subscribeHandler = subcribeHandler
+    public init(_ subscribeHandler: @escaping (AnyObserver<Element>) -> Disposable) {
+        _subscribeHandler = subscribeHandler
     }
     
     public override func subscribe<O: ObserverType>(_ observer: O) -> Disposable where O.Element == Element {
