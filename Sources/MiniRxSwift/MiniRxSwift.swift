@@ -1,5 +1,5 @@
 //
-//  MiniRxSwift version 0.9.1
+//  MiniRxSwift version 0.9.2
 //
 //  Copyright © 2021 Orion Edwards. Licensed under the MIT License
 //  https://opensource.org/licenses/MIT
@@ -45,7 +45,7 @@ public class Observable<T> : ObservableType {
 }
 
 /// Generic error codes, copied from RxSwift
-public enum MiniRxError : Swift.Error, CustomDebugStringConvertible {
+public enum MiniRxError : Swift.Error, CustomDebugStringConvertible, Equatable {
     /// Unknown error occurred.
     case unknown
     /// Performing an action on disposed object.
@@ -71,6 +71,22 @@ public enum MiniRxError : Swift.Error, CustomDebugStringConvertible {
         case .noElements: return "Sequence doesn't contain any elements."
         case .moreThanOneElement: return "Sequence contains more than one element."
         case .timeout: return "Sequence timeout."
+        }
+    }
+    
+    public static func == (lhs: MiniRxError, rhs: MiniRxError) -> Bool {
+        switch (lhs, rhs) {
+        case (.disposed(let a), .disposed(let b)):
+            return a === b
+        case (.unknown, .unknown),
+             (.overflow, .overflow),
+             (.argumentOutOfRange, .argumentOutOfRange),
+             (.noElements, .noElements),
+             (.moreThanOneElement, .moreThanOneElement),
+             (.timeout, .timeout):
+            return true
+        default:
+            return false
         }
     }
 }
@@ -682,8 +698,6 @@ public class SerialDisposable : Cancelable, Lockable {
     }
 }
 
-public class TimeoutError : Error { }
-
 public extension ObservableType {
     /** Transforms values as they are emitted by an observable
     # Reference
@@ -955,7 +969,7 @@ public extension ObservableType {
         }
     }
     
-    /** If the given observable does not emit a value within `dueTime`, will instead publish a `TimeoutError` to abort the observable, rather than waiting forever.
+    /** If the given observable does not emit a value within `dueTime`, will instead publish a `MiniRxError.timeout` to abort the observable, rather than waiting forever.
     # Reference
     [ObserveOn](http://reactivex.io/documentation/operators/timeout.html) */
     func timeout(_ dueTime: DispatchTimeInterval, scheduler: SchedulerType) -> Observable<Element> {
@@ -968,7 +982,7 @@ public extension ObservableType {
                     innerDisposable = nil
                     return r
                 })?.dispose()
-                observer.onError(TimeoutError())
+                observer.onError(MiniRxError.timeout)
                 return Disposables.create()
             }
             
@@ -976,13 +990,16 @@ public extension ObservableType {
                 if gate.synchronized({ innerDisposable }) == nil {
                     return
                 }
+                timeoutDisposable.dispose()
                 observer.onNext(value)
             } onError: { (err) in
                 gate.synchronized { innerDisposable = nil }
                 timeoutDisposable.dispose()
+                observer.onError(err)
             } onCompleted: {
                 gate.synchronized { innerDisposable = nil }
                 timeoutDisposable.dispose()
+                observer.onCompleted()
             }
             
             return CompositeDisposable(innerDisposable!, timeoutDisposable)
