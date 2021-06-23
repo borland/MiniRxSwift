@@ -1,5 +1,5 @@
 //
-//  MiniRxSwift version 0.9.2
+//  MiniRxSwift version 0.9.3
 //
 //  Copyright © 2021 Orion Edwards. Licensed under the MIT License
 //  https://opensource.org/licenses/MIT
@@ -1058,6 +1058,103 @@ public extension ObservableType {
                     attachedDisposable?.dispose()
                 }
             }
+        }
+    }
+    
+    /** emit only the first item (or the first item that meets some condition) emitted by an Observable
+     # Reference
+     [First]http://reactivex.io/documentation/operators/first.html*/
+    func first() -> Observable<Element?> {
+        return Observable.create { observer in
+            let serialDisposable = SerialDisposable()
+            
+            serialDisposable.disposable = self.subscribe(
+                onNext: { value in
+                    if serialDisposable.isDisposed { return }
+                    
+                    serialDisposable.dispose()
+                    
+                    observer.onNext(value)
+                    observer.onCompleted()
+                },
+                onError: { e in
+                    if !serialDisposable.isDisposed {
+                        observer.onError(e)
+                    }
+                },
+                onCompleted: {
+                    if !serialDisposable.isDisposed { // no elements received, emit nil
+                        observer.onNext(nil)
+                        observer.onCompleted()
+                    }
+                    // else we've already completed
+                })
+            
+            return serialDisposable
+        }
+    }
+    
+    func firstOrDefault(_ defaultValue: Element) -> Observable<Element> {
+        return Observable.create { observer in
+            let serialDisposable = SerialDisposable()
+            
+            serialDisposable.disposable = self.subscribe(
+                onNext: { value in
+                    if serialDisposable.isDisposed { return }
+                    
+                    serialDisposable.dispose()
+                    
+                    observer.onNext(value)
+                    observer.onCompleted()
+                },
+                onError: observer.onError,
+                onCompleted: {
+                    if serialDisposable.isDisposed { return }
+                    
+                    observer.onNext(defaultValue)
+                    observer.onCompleted()
+                })
+            
+            return serialDisposable
+        }
+    }
+    
+    /** emit only the last item (or the last item that meets some condition) emitted by an Observable
+     #Reference
+     [Last]http://reactivex.io/documentation/operators/last.html*/
+    func last() -> Observable<Element?> {
+        return Observable.create { observer in
+            let serialDisposable = SerialDisposable()
+            var lastValue: Element? = nil
+            serialDisposable.disposable = self.subscribe(
+                onNext: { lastValue = $0 },
+                onError: observer.onError,
+                onCompleted: {
+                    if let lv = lastValue {
+                        observer.onNext(lv)
+                    } else {
+                        observer.onNext(nil) // no elements received, emit nil
+                    }
+                    observer.onCompleted()
+                })
+            
+            return serialDisposable
+        }
+    }
+    
+    func lastOrDefault(_ defaultValue: Element) -> Observable<Element> {
+        return Observable.create { observer in
+            let serialDisposable = SerialDisposable()
+            var lastValue: Element = defaultValue
+            serialDisposable.disposable = self.subscribe(
+                onNext: { lastValue = $0 },
+                onError: observer.onError,
+                onCompleted: {
+                    observer.onNext(lastValue)
+                    observer.onCompleted()
+                })
+            
+            return serialDisposable
         }
     }
 }
