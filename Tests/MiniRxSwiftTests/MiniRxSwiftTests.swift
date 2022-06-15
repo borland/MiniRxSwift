@@ -40,4 +40,21 @@ final class MiniRxSwiftTests: XCTestCase {
     static var allTests = [
         ("testAllTheThings", testAllTheThings),
     ]
+    
+    func test_observableCreateWontAllowErrorAfterComplete() {
+        let observable: Observable<Int> = Observable.create { observer in
+            observer.onCompleted()
+            observer.onError(NSError())
+            
+            return Disposables.create()
+        }
+        
+        _ = observable.subscribe(
+            onNext: { _ in },
+            onError: { _ in
+                // shouldn't error after onComplete is hit
+                XCTFail()
+            },
+            onCompleted: {})
+    }
 }

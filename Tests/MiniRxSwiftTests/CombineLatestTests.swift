@@ -174,4 +174,49 @@ class CombineLatestTests : XCTestCase {
         
         XCTAssertEqual([.next("1,100"), .error(MockError("broken")), .disposed], results.array)
     }
+    
+    func testCombineLatest_withObservableJustFirst() {
+        let s1 = Observable.just(1)
+        let s2 = PublishSubject<Int>()
+        
+        let results = RefArray<Evt<String>>()
+        
+        _ = Observable<String>.combineLatest(s1, s2) { a, b in "\(a),\(b)" }.subscribe(into: results)
+        
+        XCTAssertEqual([], results.array)
+        
+        s2.onNext(100) // s2 keeps going with the remembered value from s1
+        XCTAssertEqual([.next("1,100")], results.array)
+        
+        s2.onNext(101)
+        XCTAssertEqual([.next("1,100"), .next("1,101")], results.array)
+    }
+    
+    func testCombineLatest_withObservableJustSecond() {
+        let s1 = PublishSubject<Int>()
+        let s2 = Observable.just(1)
+        
+        let results = RefArray<Evt<String>>()
+        
+        _ = Observable<String>.combineLatest(s1, s2) { a, b in "\(a),\(b)" }.subscribe(into: results)
+        
+        XCTAssertEqual([], results.array)
+        
+        s1.onNext(100)
+        XCTAssertEqual([.next("100,1")], results.array)
+        
+        s1.onNext(101)
+        XCTAssertEqual([.next("100,1"), .next("101,1")], results.array)
+    }
+    
+    func testCombineLatest_withTwoObservableJust() {
+        let s1 = Observable.just(1)
+        let s2 = Observable.just(2)
+        
+        let results = RefArray<Evt<String>>()
+        
+        _ = Observable<String>.combineLatest(s1, s2) { a, b in "\(a),\(b)" }.subscribe(into: results)
+
+        XCTAssertEqual([.next("1,2"), .completed, .disposed], results.array)
+    }
 }
