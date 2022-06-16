@@ -107,7 +107,7 @@ public extension ObservableType {
     /** Creates a new observable by calling your closure to perform some operation
     # Reference
     [Create](http://reactivex.io/documentation/operators/create.html) */
-    static func create(subscribe: @escaping (AnyObserver<Element>) -> Disposable) -> Observable<Element> {
+    static func create(_ subscribe: @escaping (AnyObserver<Element>) -> Disposable) -> Observable<Element> {
         return AnonymousObservable(subscribe)
     }
     
@@ -238,6 +238,37 @@ public extension ObservableType {
     [Concat](http://reactivex.io/documentation/operators/concat.html) */
     static func concat(_ sources: [Observable<Element>]) -> Observable<Element> {
         return create { observer in
+            let gate = NSObject()
+            
+            // ref: https://github.com/dotnet/reactive/blob/main/Rx.NET/Source/src/System.Reactive/Linq/Observable/ConcatMany.cs
+            // we have to trampoline if we want to preserve the same behaviour as C# Rx. RxSwift and RxJava also trampoline
+            // trampolining behaviour: The first source we subscribe to just runs
+            // immediately, but anything after that gets queued.
+            // Question: Does CombineLatest also need to trampoline? Maybe? Come back to that if we need to
+            //
+            // NOTE on weird behaviour with isProcessing:
+            // on the first call into procesNext, if the first observable completes inline
+            // we don't want to drain the queue until we've had a chance to subscribe.
+            // I don't have my head 100% around this, so there might be a better way to manage it.
+            var queue: [()->Void] = []
+            var isProcessing = true
+            
+            func drain(force: Bool = false) {
+                objc_sync_enter(gate); defer { objc_sync_exit(gate) }
+                if isProcessing && !force {
+                    return // already running under an outer drain, no need to do anything
+                }
+                isProcessing = true
+                while !queue.isEmpty {
+                    current.disposable = nil // dispose previous completed disposable before starting the next one in the concat list
+                    let action = queue.removeFirst()
+                    objc_sync_exit(gate) // don't hold the lock while calling callbacks
+                    action()
+                    objc_sync_enter(gate)
+                }
+                isProcessing = false
+            }
+            
             let current = SerialDisposable()
             
             var iter = sources.makeIterator()
@@ -250,7 +281,8 @@ public extension ObservableType {
                             observer.onError(err)
                         },
                         onCompleted: {
-                            processNext()
+                            queue.append(processNext)
+                            drain()
                         })
                 } else { // end of sequence
                     current.disposable = nil
@@ -258,6 +290,7 @@ public extension ObservableType {
                 }
             }
             processNext()
+            drain(force: true)
             return current
         }
     }
